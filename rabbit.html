@@ -1,100 +1,163 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>聰明兔冷暖計算機</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --ink: #332922;
-      --muted: #8d8177;
-      --paper: #fffdf9;
-      --bg: #faf8f5;
-      --line: #eadfd5;
-      --accent: #9b7854;
-      --safe: #3f9b6d;
-      --mild: #d99b2b;
-      --severe: #dc6b2f;
-      --critical: #c73535;
-      --cold: #6a7fc0;
-      --freezing: #7666c5;
+        const rh = data.hourly.relative_humidity_2m[i];
+        const { type, thi } = assessHour(t, rh);
+        return { date, t, rh, type, thi };
+      });
+      const start = all.findIndex((h) => h.date >= new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()));
+      hourlyData = all.slice(Math.max(0, start), Math.max(0, start) + 24);
     }
 
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--ink);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    function renderWeather() {
+      $("weatherBox").style.display = "block";
+      $("placeLabel").textContent = placeName ? `${placeName} 室外溫度` : "室外溫度";
+      $("outTemp").textContent = `${outdoor.temp}°C`;
+      $("outHumid").textContent = `${outdoor.humidity}%`;
+      renderHourly();
     }
 
-    main {
-      width: min(100%, 520px);
-      margin: 0 auto;
-      padding: 24px 16px 44px;
+    function renderHourly() {
+      if (!hourlyData || hourlyData.length === 0) return;
+      const bars = hourlyData.map((h) => `<div title="${fmtHour(h.date)} ${h.t}°C ${h.rh}% THI ${h.thi.toFixed(1)}" style="background:${TYPE_COLOR[h.type]}"></div>`).join("");
+      $("hourlyWrap").innerHTML = `
+        <div style="margin-top:14px; color:#8d8177; font-size:13px;">接下來 24 小時熱冷風險</div>
+        <div class="bar">${bars}</div>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--safe)"></i>安全</span>
+          <span><i class="dot" style="background:var(--mild)"></i>輕度熱</span>
+          <span><i class="dot" style="background:var(--severe)"></i>明顯熱</span>
+          <span><i class="dot" style="background:var(--critical)"></i>高危險</span>
+          <span><i class="dot" style="background:var(--cold)"></i>偏冷</span>
+          <span><i class="dot" style="background:var(--freezing)"></i>太冷</span>
+        </div>
+      `;
     }
 
-    header { text-align: center; margin-bottom: 18px; }
-    h1 { font-size: 24px; margin: 8px 0 6px; letter-spacing: 0; }
-    p { margin: 0; line-height: 1.7; }
-    .lead { color: var(--muted); font-size: 14px; }
-    .card {
-      background: white;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 18px;
-      margin-bottom: 14px;
-      box-shadow: 0 2px 14px rgba(80, 60, 40, .06);
+    function buildSchedule() {
+      if (!hourlyData) return [];
+      const items = [];
+      let active = null;
+
+      function needKind(type) {
+        if (["mild", "severe", "critical"].includes(type)) return "cool";
+        if (["cold", "freezing"].includes(type)) return "heat";
+        return null;
+      }
+
+      hourlyData.forEach((h, i) => {
+        const kind = needKind(h.type);
+        if (kind && !active) active = { kind, start: i, peak: h.type };
+        if (active && kind === active.kind && ["critical", "severe", "freezing"].includes(h.type)) active.peak = h.type;
+        if (active && kind !== active.kind) {
+          items.push({ ...active, end: i });
+          active = kind ? { kind, start: i, peak: h.type } : null;
+        }
+      });
+      if (active) items.push({ ...active, end: hourlyData.length - 1 });
+
+      return items.map((s) => {
+        const startIndex = s.kind === "cool" ? Math.max(0, s.start - 1) : s.start;
+        const start = hourlyData[startIndex];
+        const end = hourlyData[Math.min(hourlyData.length - 1, s.end)];
+        const target = s.kind === "cool" ? coolTarget(s.peak) : heatTarget(s.peak);
+        return {
+          kind: s.kind,
+          target,
+          start: fmtHour(start.date),
+          end: s.end >= hourlyData.length - 1 ? "持續觀察" : fmtHour(end.date)
+        };
+      });
     }
-    .note {
-      background: var(--paper);
-      border-left: 4px solid #c4a882;
-      color: #6d5d4f;
-      font-size: 13px;
+
+    function renderResult(payload) {
+      const { type, rawType, thi, t, h, vulnerable } = payload;
+      const level = LEVEL[type];
+      const color = TYPE_COLOR[type];
+      const schedule = buildSchedule();
+      const targetHtml = level.hvac === "cool"
+        ? `<div class="target"><span>冷氣建議設定</span><b>${coolTarget(type)}°C</b><small>目標是降低室內 THI，避免冷風直吹兔籠。</small></div>`
+        : level.hvac === "heat"
+          ? `<div class="target" style="background:linear-gradient(135deg,#4a3a7c,#6a5aac)"><span>暖氣建議設定</span><b>${heatTarget(type)}°C</b><small>保留通風與避風角落，避免局部過熱。</small></div>`
+          : "";
+
+      let advice = "目前室內狀態看起來穩定，維持通風、乾淨飲水與陰涼休息處即可。";
+      if (level.hvac === "cool") advice = "建議開冷氣或加強降溫，並移除陽光直曬、補充飲水。若兔兔喘、攤平不動、耳朵很燙或拒食，請立即尋求獸醫協助。";
+      if (level.hvac === "heat") advice = "建議提高室溫、提供墊材或保暖躲藏處，但不要讓暖氣直接吹兔兔。";
+      if (vulnerable && type !== rawType) advice = `因為已勾選高風險狀態，風險由「${LEVEL[rawType].label}」提高為「${level.label}」。` + advice;
+
+      const scheduleHtml = schedule.length
+        ? schedule.map((s) => `
+          <div class="schedule-item">
+            <strong>${s.kind === "cool" ? "冷氣" : "暖氣"} ${s.target}°C</strong><br />
+            建議 ${s.start} 開啟，${s.end} 可再評估關閉。
+          </div>`).join("")
+        : `<div class="schedule-item">接下來 24 小時沒有明顯需要冷暖氣的時段；仍請依室內實測溫濕度調整。</div>`;
+
+      $("result").style.display = "block";
+      $("result").style.borderColor = color;
+      $("result").style.background = type === "safe" ? "#f1fbf5" : "white";
+      $("result").innerHTML = `
+        <h2 style="color:${color}">${level.label}</h2>
+        <p class="sub">${level.sub}</p>
+        <div class="thi">
+          <div>
+            <span style="color:#8d8177; font-size:12px;">室內 THI</span>
+            <strong style="display:block; color:${color}">${thi.toFixed(1)}</strong>
+          </div>
+          <div style="text-align:right; color:#8d8177; font-size:13px;">${t}°C<br />${h}% RH</div>
+        </div>
+        ${targetHtml}
+        <div class="advice" style="color:${color}">${advice}</div>
+        <div class="schedule">
+          <div style="margin-top:16px; color:#8d8177; font-size:13px; font-weight:700;">今天接下來的冷暖氣時段</div>
+          ${hourlyData ? scheduleHtml : `<div class="schedule-item">尚未取得所在地天氣。若要看整天時段，請先按「取得我的位置與天氣」。</div>`}
+        </div>
+      `;
     }
-    .step {
-      color: var(--accent);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 1px;
-      margin-bottom: 12px;
-    }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    label { display: block; color: #756a60; font-size: 13px; margin-bottom: 6px; }
-    input[type="number"] {
-      width: 100%;
-      border: 1.5px solid var(--line);
-      border-radius: 10px;
-      padding: 11px 12px;
-      background: #fffdfa;
-      color: var(--ink);
-      font-size: 20px;
-      font-weight: 700;
-      outline: none;
-    }
-    input[type="number"]:focus {
-      border-color: #c4a882;
-      box-shadow: 0 0 0 3px rgba(196, 168, 130, .18);
-    }
-    .check-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid var(--line);
-      color: #5d5148;
-      font-size: 13px;
-      line-height: 1.6;
-    }
-    .check-row input { width: 18px; height: 18px; margin-top: 2px; }
-    button {
-      width: 100%;
-      border: 0;
-      border-radius: 12px;
-      padding: 13px 14px;
-      background: #342a23;
-      color: white;
-      cursor: pointer;
-      font-size: 15px;
+
+    $("locateBtn").addEventListener("click", () => {
+      showError("");
+      if (!navigator.geolocation) {
+        showError("這個瀏覽器不支援定位。你仍可以先輸入室內溫濕度做基本判斷。");
+        return;
+      }
+      $("locateBtn").disabled = true;
+      $("locateBtn").textContent = "取得位置與天氣中...";
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        try {
+          const { latitude, longitude } = pos.coords;
+          placeName = await reverseGeocode(latitude, longitude);
+          await fetchWeather(latitude, longitude);
+          renderWeather();
+        } catch (err) {
+          showError(err.message || "取得天氣資料失敗，請稍後再試。");
+        } finally {
+          $("locateBtn").disabled = false;
+          $("locateBtn").textContent = "重新取得我的位置與天氣";
+        }
+      }, () => {
+        $("locateBtn").disabled = false;
+        $("locateBtn").textContent = "取得我的位置與天氣";
+        showError("定位失敗或被拒絕。請允許瀏覽器定位，或先用室內溫濕度做基本判斷。");
+      }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
+    });
+
+    $("checkBtn").addEventListener("click", () => {
+      const t = Number.parseFloat($("indoorTemp").value);
+      const h = Number.parseFloat($("indoorHumid").value);
+      if (!Number.isFinite(t) || !Number.isFinite(h)) {
+        showError("請先輸入室內溫度與濕度。");
+        return;
+      }
+      if (h < 0 || h > 100 || t < -10 || t > 45) {
+        showError("請確認溫度與濕度數值是否合理。濕度需在 0 到 100% 之間。");
+        return;
+      }
+      showError("");
+      const assessed = assessHour(t, h);
+      const vulnerable = $("vulnerable").checked;
+      const type = vulnerable ? upgradeType(assessed.type) : assessed.type;
+      renderResult({ type, rawType: assessed.type, thi: assessed.thi, t, h, vulnerable });
+    });
+  </script>
+</body>
+</html>
+
